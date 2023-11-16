@@ -36,6 +36,9 @@ def time_str_to_sec(time_str: str) -> int:
 
 
 def center_crop_and_resize(frame: Image, height: int, width: int) -> Image:
+    #* 去除inf nature 黑邊
+    frame = frame.crop((0,(1/5)*frame.height,frame.width,(4/5)*frame.height))
+
     # Measures by what factor height and width are larger/smaller than desired.
     height_scale = frame.height / height
     width_scale = frame.width / width

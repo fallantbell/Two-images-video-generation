@@ -23,16 +23,16 @@ conda activate dataset_tools
 for i in $(seq 0 10)
 do
     args=(
-        SRC_DIR
-        DST_DIR
+        ../../../../disk2/acid_dataset/train
+        ../../../../disk2/acid_dataset_new/train
         --num-partitions 10
         --partition $i
-        --height 144
-        --width 256
+        --height 36
+        --width 64
         # --wait-for-list-file
     )
     # [[ $i != 0 ]] && args+=(--wait-for-list-file)
-    srun -N 1 -n 1 --exclusive python dataset_tools/make_dataset_from_videos.py "${args[@]}" &
+    srun -N 1 -n 1 --exclusive python dataset_tools/make_dataset_from_frames.py "${args[@]}" &
 done
 
 wait

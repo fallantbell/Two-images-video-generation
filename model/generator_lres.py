@@ -23,6 +23,7 @@ import torch.nn.functional as F
 import torch_utils.distributed as dist_utils
 from torch_utils import misc, persistence
 from torch_utils.ops import bias_act, upfirdn2d
+from color import *
 
 # =====================================================================================================================
 
@@ -313,6 +314,36 @@ class MagnitudeEMA(nn.Module):
 
         gain = self.magnitude_ema.rsqrt()
         return gain
+    
+# =====================================================================================================================
+
+
+@persistence.persistent_class
+class Imageencode(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.conv1 = nn.Conv2d(in_channels=3,out_channels=256,kernel_size=3, padding=1)
+        self.down1 = nn.Conv2d(in_channels=256,out_channels=256,kernel_size=3, padding=1)
+        self.conv2 = nn.Conv2d(in_channels=256,out_channels=512,kernel_size=3, padding=1)
+        self.conv3 = nn.Conv2d(in_channels=512,out_channels=512,kernel_size=3, padding=1)
+        self.conv4 = nn.Conv2d(in_channels=512,out_channels=512,kernel_size=3, padding=1)
+        self.conv5 = nn.Conv2d(in_channels=512,out_channels=512,kernel_size=3, padding=1)
+        self.conv6 = nn.Conv2d(in_channels=512,out_channels=512,kernel_size=3, padding=1)
+        self.conv7 = nn.Conv2d(in_channels=512,out_channels=512,kernel_size=3, padding=1)
+        self.pool = nn.MaxPool2d(kernel_size=2, stride=2, padding=0)
+        self.pool1 = nn.MaxPool2d(kernel_size=2, stride=2, padding=(1,0))
+
+
+    def forward(self, input: torch.Tensor,) -> torch.Tensor:
+        x0 = self.pool(F.relu(self.conv1(input)))   #* x0 (256,h/2,w/2)
+        x1 = self.pool(F.relu(self.down1(x0)))      #* x1 (256,h/4,w/4)
+        x2 = F.relu(self.conv2(x1))                 #* x2 (512,h/4,w/4)
+        x3 = self.pool1(F.relu(self.conv3(x2)))     #* x3 (512,h/8,w/8)
+        x4 = F.relu(self.conv4(x3))                 #* x4 (512,h/8,w/8)
+        x5 = self.pool1(F.relu(self.conv5(x4)))     #* x5 (512,h/16,w/16)
+        x6 = F.relu(self.conv6(x5))                 #* x6 (512,h/16,w/16) 
+
+        return [x6,x5,x4,x3,x2,x1]
 
 
 # ======================================================================================================================
@@ -513,6 +544,8 @@ class Synthesis3dResBlock(nn.Module):
         self.affine_0 = FullyConnectedLayer(self.latent_dim, self.in_channels, bias_init=1.0)
         self.affine_1 = FullyConnectedLayer(self.latent_dim, self.in_channels, bias_init=1.0)
 
+
+
         self.weight_0 = nn.Parameter(
             torch.randn(self.in_channels, self.in_channels, self.temporal_ksize, self.spatial_ksize, self.spatial_ksize)
         )
@@ -548,6 +581,8 @@ class Synthesis3dResBlock(nn.Module):
         magnitude_ema_beta: float = 1.0,
         out_seq_length: Optional[int] = None,
         dtype: Optional[torch.dtype] = None,
+        latent_begin: Optional[torch.Tensor] = None,
+        latent_end: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
 
         misc.assert_shape(input, (None, self.in_channels, None, None, None))
@@ -560,6 +595,23 @@ class Synthesis3dResBlock(nn.Module):
 
         dtype = dtype if dtype is not None else (torch.float16 if self.use_float16 and input.is_cuda else torch.float32)
         input = input.type(dtype)
+
+        if latent_begin!=None and latent_end!=None:
+
+            input = input.clone()
+
+            #* 將begin, end 資訊加入feature
+
+            true_timestep = input.shape[2]-16       #*  他在時間維度padding了 8*2  
+            for i in range(8):                      #*  在前後分別加入完整 begin,end img 資訊
+                input[:,:,i,:,:] = input[:,:,i,:,:] + latent_begin    
+                input[:,:,input.shape[2]-1-i,:,:] = input[:,:,input.shape[2]-1-i,:,:] + latent_end
+            
+            for i in range(true_timestep):          #* 根據時間加入不同程度的資訊
+                input[:,:,i+8,:,:] = input[:,:,i+8,:,:] + latent_begin*((true_timestep-i-1)/true_timestep)
+                input[:,:,i+8,:,:] = input[:,:,i+8,:,:] + latent_end*(i/true_timestep)
+
+            #*---------------------------------------
 
         if self.magnitude_ema:
             input_gain_0 = self.input_magnitude_ema_0(input, magnitude_ema_beta)
@@ -687,6 +739,8 @@ class VideoGenerator(nn.Module):
             Synthesis3dResBlock(self.latent_w_dim, in_channels=64, out_height=self.out_height, out_width=self.out_width, **s_kwargs),
         ])
         self.to_rgb = ToRGB(self.latent_w_dim, in_channels=self.spatial_layers[-1].out_channels)
+
+        self.encoding_layers = Imageencode()
         # fmt: on
 
         self.num_layers = len(self.temporal_layers) + len(self.spatial_layers) + 1
@@ -716,6 +770,8 @@ class VideoGenerator(nn.Module):
         self,
         temporal_input: torch.Tensor,
         latent_ws: list[torch.Tensor],
+        latent_begin: list[torch.Tensor],
+        latent_end: list[torch.Tensor],
         seq_length: int,
         magnitude_ema_beta: float = 1.0,
         dtype: Optional[torch.dtype] = None,
@@ -732,8 +788,22 @@ class VideoGenerator(nn.Module):
         if return_features:
             features_list = []
 
+        '''
+            temporal layer dim
+            input           4 512 20 3 4
+            layer1 out      4 512 24 3 4
+            layer2 out      4 512 32 5 8 
+            layer3 out      4 512 48 5 8
+            layer4 out      4 512 80 9 16
+            layer5 out      4 256 144 9 16
+            layer6 out      4 256 128 9 16
+        '''
+
         for layer, layer_seq_length in zip(self.temporal_layers, seq_lengths):
-            features = layer(features, latent_ws[w_index], magnitude_ema_beta, layer_seq_length, dtype=dtype)
+            features = layer(features, latent_ws[w_index], magnitude_ema_beta, layer_seq_length, dtype=dtype,
+                             latent_begin = latent_begin[w_index],
+                             latent_end = latent_end[w_index]
+                            )
             if return_features:
                 features_list.append(features)
             w_index += 1
@@ -757,6 +827,8 @@ class VideoGenerator(nn.Module):
         self,
         batch_size: int,
         seq_length: int,
+        begin_img: torch.Tensor,
+        end_img: torch.Tensor,
         magnitude_ema_beta: float = 1.0,
         generator_emb: Optional[torch.Generator] = None,
         dtype: Optional[torch.dtype] = None,
@@ -767,13 +839,16 @@ class VideoGenerator(nn.Module):
 
         in_seq_length = self.compute_seq_lengths(seq_length)[0]
 
+        latent_begin = self.encoding_layers(begin_img)
+        latent_end = self.encoding_layers(end_img)
+
         temporal_input = einops.rearrange(
             self.w_to_temp_input(einops.rearrange(latent_ws.pop(0), "n c t -> (n t) c")),
             "(n t) c -> n c t",
             t=in_seq_length,
         )
 
-        return self.synthesize_video(temporal_input, latent_ws, seq_length, magnitude_ema_beta, dtype)
+        return self.synthesize_video(temporal_input, latent_ws, latent_begin,latent_end, seq_length, magnitude_ema_beta, dtype)
 
     def sample_video_segments(
         self,

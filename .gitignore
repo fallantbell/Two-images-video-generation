@@ -1,0 +1,6 @@
+runs/
+test_folder/
+dnnlib/
+datasets/
+.vscode/
+__pycache__

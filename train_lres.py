@@ -23,12 +23,16 @@ import wandb
 
 import dnnlib
 import utils
-from dataset import VideoDataset
+from dataset import VideoDataset,VideoDataset_ACID
 from dnnlib import EasyDict
 from metrics import metric_main
 from model.video_gan_lres import LowResVideoGAN
 from torch_utils import distributed, misc, training_stats
 from torch_utils.ops import bias_act, grid_sample_gradfix, upfirdn2d
+from tqdm import tqdm
+
+from color import *
+from torchinfo import summary
 
 # =====================================================================================================================
 
@@ -62,6 +66,8 @@ def train(
     rank = distributed.get_rank()
     world_size = distributed.get_world_size()
 
+    print_g(f"total_batch:{total_batch} world_size:{world_size}")
+
     assert total_batch % world_size == 0, "Total batch size must be divisible by world size"
     assert ticks_per_train_ckpt % ticks_per_G_ema_ckpt == 0, "Invalid train checkpoint interval"
     batch_per_gpu = total_batch // world_size
@@ -90,8 +96,10 @@ def train(
         samples_dir.mkdir()
 
     with utils.context_timer0("Loading video dataset"):
-        result_dataset = VideoDataset(dataset_dir, result_seq_length, height, width, x_flip=x_flip)
-        dataset = VideoDataset(dataset_dir, seq_length, height, width, x_flip=x_flip)
+        # result_dataset = VideoDataset(dataset_dir, result_seq_length, height, width, x_flip=x_flip)
+        # dataset = VideoDataset(dataset_dir, seq_length, height, width, x_flip=x_flip)
+        result_dataset = VideoDataset_ACID(dataset_dir, result_seq_length, height, width, x_flip=x_flip)
+        dataset = VideoDataset_ACID(dataset_dir, seq_length, height, width, x_flip=x_flip)
         data_iter = utils.get_infinite_data_iter(
             dataset, batch_size=batch_per_gpu, seed=utils.random_seed(), **loader_kwargs
         )
@@ -114,16 +122,21 @@ def train(
     with utils.context_timer0("Constructing low res GAN model"):
         video_gan = LowResVideoGAN(seq_length, height, width, **gan_kwargs)
 
+    # summary(video_gan.G, [1, seq_length])
+
     stats_jsonl_fp = None
     tick_start_time = time.time()
     maintenance_time = tick_start_time - start_time
 
     utils.print0(f"Training for steps {start_step:,} - {total_steps:,}\n")
+
     for step in range(start_step, total_steps + 1):
 
         if step % steps_per_tick == 0:
             tick = step // steps_per_tick
             tick_end_time = time.time()
+
+            pbar = tqdm(range(step,step+steps_per_tick+1))
 
             # Accumulates training stats and prints status.
             if step > start_step:
@@ -159,10 +172,10 @@ def train(
 
             if tick % ticks_per_G_ema_ckpt == 0:
                 # Prints summaries of network architectures.
-                if rank == 0:
-                    with torch.inference_mode():
-                        video = misc.print_module_summary(video_gan.G, [1, seq_length])
-                        misc.print_module_summary(video_gan.D, [video])
+                # if rank == 0:
+                #     with torch.inference_mode():
+                #         video = misc.print_module_summary(video_gan.G, [1, seq_length])
+                #         misc.print_module_summary(video_gan.D, [video])
 
                 # Saves checkpoint.
                 G_ema_ckpt, train_ckpt = video_gan.ckpt()
@@ -182,9 +195,10 @@ def train(
                     generator = torch.Generator("cuda").manual_seed(seed_per_gpu)
                     segments = G_ema_ckpt.sample_video_segments(1, result_seq_length, generator_emb=generator)
                     path = samples_dir.joinpath(f"fake-{step:08d}.mp4") if rank == 0 else None
-                    utils.write_video_grid(segments, path, gather=True)
+                    # utils.write_video_grid(segments, path, gather=True)
 
                 # Evaluates metrics.
+                '''
                 if len(metrics) > 0:
                     utils.print0(f"Evaluating metrics...")
                     wandb_results = dict()
@@ -205,6 +219,7 @@ def train(
                     if rank == 0:
                         wandb.log(wandb_results, step=step, commit=True)
                 del G_ema_ckpt
+                '''
 
             tick_start_time = time.time()
             maintenance_time = tick_start_time - tick_end_time
@@ -216,11 +231,12 @@ def train(
         video_gan.update_lrates(step)
 
         # Generator.
-        video_gan.update_G(batch_per_gpu)
+        video = next(data_iter)["video"].cuda()
+        G_loss = video_gan.update_G(batch_per_gpu,video)
 
         # Discriminator.
         video = next(data_iter)["video"].cuda()
-        video_gan.update_D(video)
+        D_loss = video_gan.update_D(video)
 
         # R1 regularization.
         if step % r1_interval == 0:
@@ -228,6 +244,9 @@ def train(
             video_gan.update_r1(video, gain=r1_interval)
 
         video_gan.update_G_ema(step)
+
+        pbar.set_postfix({'G_loss':'{0:1.3f}'.format(G_loss),'D_loss':'{0:1.3f}'.format(D_loss)})
+        pbar.update(1)
 
 
 # =====================================================================================================================
@@ -237,7 +256,7 @@ def train(
 @click.option("--outdir", help="Where to make the output run directory", type=str, default="runs/lres")
 @click.option("--dataset", "dataset_dir", help="Path to dataset directory", type=str, required=True)
 @click.option("--batch", "total_batch", help="Total batch size across all GPUs and gradient accumulation steps", type=int, default=64)  # fmt: skip
-@click.option("--grad-accum", help="Gradient accumulation steps", type=int, default=2)
+@click.option("--grad-accum", help="Gradient accumulation steps", type=int, default=1)
 @click.option("--gamma", "r1_gamma", help="R1 regularization gamma", type=float, default=1.0)
 @click.option("--metric", "-m", "metrics", help="Metrics to compute", default=[], type=str, multiple=True)
 def main(
@@ -297,7 +316,7 @@ def main(
         D_lrate=0.002,
         D_beta2=0.99,
         r1_gamma=r1_gamma,
-        G_random_temp_translate=True,
+        G_random_temp_translate=False,
         temp_scale_augment=1.0,
         G_grad_accum=grad_accum,
         D_grad_accum=grad_accum,

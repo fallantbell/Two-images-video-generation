@@ -20,7 +20,7 @@ import einops
 import numpy as np
 import torch
 import utils
-from dataset import VideoDataset, VideoDatasetPerImage
+from dataset import VideoDataset, VideoDatasetPerImage,VideoDataset_ACID
 from torch_utils import distributed
 
 # fmt: off
@@ -241,7 +241,7 @@ def compute_feature_stats_for_dataset(
     if use_image_dataset:
         dataset = VideoDatasetPerImage(**opts.dataset_kwargs)
     else:
-        dataset = VideoDataset(**opts.dataset_kwargs)
+        dataset = VideoDataset_ACID(**opts.dataset_kwargs)
 
     # Try to lookup from cache.
     cache_file = None
@@ -355,7 +355,7 @@ def compute_feature_stats_for_generator(
         if use_image_dataset:
             dataset = VideoDatasetPerImage(**opts.cond_dataset_kwargs)
         else:
-            dataset = VideoDataset(**opts.cond_dataset_kwargs)
+            dataset = VideoDataset_ACID(**opts.cond_dataset_kwargs)
 
         if use_image_dataset or opts.single_sample_per_video:
             num_items = len(dataset)

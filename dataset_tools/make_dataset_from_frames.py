@@ -145,6 +145,9 @@ if __name__ == "__main__":
     parser.add_argument("--wait-for-list-file", default=False, action="store_true")
     args = parser.parse_args()
 
+    print(f"input_dir = {args.input_dir}")
+    print(f"output_dir = {args.output_dir}")
+
     make_dataset(
         args.input_dir,
         args.output_dir,
