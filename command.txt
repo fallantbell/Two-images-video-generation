@@ -1,7 +1,7 @@
-CUDA_VISIBLE_DEVICES=0,1 \
-python -m torch.distributed.run --nnodes=1 --nproc_per_node=2 train_lres.py \
---outdir=runs/lres --dataset=datasets/horseback \
---batch=2 --grad-accum=2 \
+CUDA_VISIBLE_DEVICES=6,7,8,9 \
+python -m torch.distributed.run --nnodes=1 --nproc_per_node=4 train_lres.py \
+--outdir=runs/lres --dataset=../../../disk2/icchiu/acid_dataset/train \
+--batch=8 --grad-accum=1 --outdir-name=base_pp \
 --gamma=1.0 --metric=fvd2048_128f
 
 

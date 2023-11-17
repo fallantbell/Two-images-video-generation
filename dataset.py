@@ -113,7 +113,7 @@ class VideoDataset_ACID(Dataset):
 
         frame = Image.open(frame_path)
         frame = self.center_crop_and_resize(frame,self.height,self.width)
-        frame.save(f"test_folder/test.png")
+        # frame.save(f"test_folder/test.png")
         frame = np.array(frame)
         frame = torch.from_numpy(frame)
         frame = einops.rearrange(frame, "h w c -> c h w")

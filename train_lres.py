@@ -136,7 +136,8 @@ def train(
             tick = step // steps_per_tick
             tick_end_time = time.time()
 
-            pbar = tqdm(range(step,step+steps_per_tick+1))
+            if rank == 0:
+                pbar = tqdm(range(step,step+steps_per_tick+1))
 
             # Accumulates training stats and prints status.
             if step > start_step:
@@ -245,8 +246,9 @@ def train(
 
         video_gan.update_G_ema(step)
 
-        pbar.set_postfix({'G_loss':'{0:1.3f}'.format(G_loss),'D_loss':'{0:1.3f}'.format(D_loss)})
-        pbar.update(1)
+        if rank == 0:
+            pbar.set_postfix({'G_loss':'{0:1.3f}'.format(G_loss),'D_loss':'{0:1.3f}'.format(D_loss)})
+            pbar.update(1)
 
 
 # =====================================================================================================================
@@ -254,6 +256,7 @@ def train(
 
 @click.command()
 @click.option("--outdir", help="Where to make the output run directory", type=str, default="runs/lres")
+@click.option("--outdir-name", type=str, default="base")
 @click.option("--dataset", "dataset_dir", help="Path to dataset directory", type=str, required=True)
 @click.option("--batch", "total_batch", help="Total batch size across all GPUs and gradient accumulation steps", type=int, default=64)  # fmt: skip
 @click.option("--grad-accum", help="Gradient accumulation steps", type=int, default=1)
@@ -261,6 +264,7 @@ def train(
 @click.option("--metric", "-m", "metrics", help="Metrics to compute", default=[], type=str, multiple=True)
 def main(
     outdir: str,
+    outdir_name: str,
     dataset_dir: str,
     total_batch: int,
     grad_accum: int,
@@ -342,8 +346,8 @@ def main(
         distributed.init(temp_dir)
 
         if distributed.get_rank() == 0:
-            desc = f"{Path(c.dataset_dir).name}-{total_batch}batch-{grad_accum}accum-{r1_gamma}gamma"
-            c.run_dir = utils.get_next_run_dir(outdir, desc=desc)
+            # desc = f"{Path(c.dataset_dir).name}-{total_batch}batch-{grad_accum}accum-{r1_gamma}gamma"
+            c.run_dir = outdir+"/"+outdir_name
             Path(c.run_dir).mkdir(parents=True, exist_ok=True)
 
         # Sets random seed.
