@@ -4,3 +4,5 @@ dnnlib/
 datasets/
 .vscode/
 __pycache__
+
+command.txt
