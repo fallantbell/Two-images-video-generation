@@ -1,7 +1,9 @@
 runs/
 test_folder/
+img_folder/
 dnnlib/
 datasets/
+outputs/
 .vscode/
 __pycache__
 

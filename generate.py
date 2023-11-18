@@ -10,8 +10,35 @@ import pathlib
 
 import click
 import torch
+import einops
+import numpy as np
+import random
+from PIL import Image
 
 import utils
+
+def choose_img(input_path):
+    begin_idx = random.randint(0, 1000)
+    end_idx = random.randint(0, 1000)
+    begin_path = input_path+ f"/{begin_idx}.png"
+    end_path = input_path+ f"/{end_idx}.png"
+
+    begin_img = Image.open(begin_path)
+    begin_img.save(f"test_folder/begin.png")
+    begin_img = np.array(begin_img)
+    begin_img = torch.from_numpy(begin_img)
+    begin_img = einops.rearrange(begin_img, "h w c -> c h w")
+    begin_img = 2 * begin_img.to(torch.float32) / 255 - 1
+
+    end_img = Image.open(end_path)
+    end_img.save(f"test_folder/end.png")
+    end_img = np.array(end_img)
+    end_img = torch.from_numpy(end_img)
+    end_img = einops.rearrange(end_img, "h w c -> c h w")
+    end_img = 2 * end_img.to(torch.float32) / 255 - 1
+
+    return begin_img,end_img
+
 
 # =====================================================================================================================
 
@@ -31,7 +58,7 @@ def generate(
     sres_path: str,
     seq_length: int,
     save_lres: bool,
-    save_frame_indices: list[int],
+    save_frame_indices: list,
 ):
     """Generate videos using pretrained model pickles.
     Examples:
@@ -61,7 +88,13 @@ def generate(
     lr_seq_length = ((seq_length + segment_length - 1) // segment_length) * segment_length
     lr_seq_length = lr_seq_length if sres_path is None else lr_seq_length + 2 * sres_G.temporal_context
     generator = None if seed is None else torch.Generator("cuda").manual_seed(seed)
-    lr_video = lres_G(1, lr_seq_length, generator_emb=generator)
+
+    input_path = "img_folder"
+    begin_img, end_img = choose_img(input_path)
+    lr_video = lres_G(1, lr_seq_length,
+                        begin_img = begin_img.to("cuda"),
+                        end_img = end_img.to("cuda"), 
+                        generator_emb=generator)
 
     pathlib.Path(outdir).mkdir(parents=True, exist_ok=True)
 
